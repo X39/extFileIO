@@ -259,25 +259,25 @@ host& host::instance()
 
 
 
-int main()
-{
-    const size_t size = 10000;
-    char buff[size];
-
-    const size_t args1_size = 1;
-    const char* args1[args1_size] = {
-        "\"external\""
-    };
-    RVExtensionArgs(buff, size, "list_dir", args1, args1_size);
-
-    const size_t args2_size = 1;
-    const char* args2[args2_size] = {
-        "1"
-    };
-    RVExtensionArgs(buff, size, "?", args2, args2_size);
-    RVExtensionArgs(buff, size, "?", args2, args2_size);
-    RVExtensionArgs(buff, size, "?", args2, args2_size);
-    RVExtensionArgs(buff, size, "?", args2, args2_size);
-    RVExtensionArgs(buff, size, "?", args2, args2_size);
-    RVExtensionArgs(buff, size, "?", args2, args2_size);
-}
+//int main()
+//{
+//    const size_t size = 10000;
+//    char buff[size];
+//
+//    const size_t args1_size = 1;
+//    const char* args1[args1_size] = {
+//        "\"external\""
+//    };
+//    RVExtensionArgs(buff, size, "list_dir", args1, args1_size);
+//
+//    const size_t args2_size = 1;
+//    const char* args2[args2_size] = {
+//        "1"
+//    };
+//    RVExtensionArgs(buff, size, "?", args2, args2_size);
+//    RVExtensionArgs(buff, size, "?", args2, args2_size);
+//    RVExtensionArgs(buff, size, "?", args2, args2_size);
+//    RVExtensionArgs(buff, size, "?", args2, args2_size);
+//    RVExtensionArgs(buff, size, "?", args2, args2_size);
+//    RVExtensionArgs(buff, size, "?", args2, args2_size);
+//}
