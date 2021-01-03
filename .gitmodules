@@ -1,0 +1,3 @@
+[submodule "sqf-value"]
+	path = external/sqf-value
+	url = https://github.com/arma3/sqf-value.git
