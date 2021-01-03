@@ -19,6 +19,7 @@
 #define LONG_RESULT_KEY_NOT_FOUND "Long Result key unknown or expired."
 #define FILE_NOT_FOUND "File provided is not existing."
 #define DIRECTORY_NOT_FOUND "Directory provided is not existing or a file."
+#define FAILED_TO_OPEN_FILE_FOR_WRITE "Could not open file for write."
 
 
 using namespace std::string_literals;
@@ -189,6 +190,7 @@ host& host::instance()
             if (values.size() != 1) { return host::err(ARG_COUNT_MISSMATCH(1)); }
             std::filesystem::path fpath = values[0].as<std::string>();
             if (!std::filesystem::exists(fpath)) { return host::err(FILE_NOT_FOUND); }
+            if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
             std::ifstream file(fpath);
             if (!file.is_open() || !file.good()) { return host::err(FILE_NOT_FOUND); }
             std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -211,6 +213,44 @@ host& host::instance()
                     });
             }
             return paths;
+        } },
+        { "write_truncate", [](std::vector<sqf::value> values) -> sqf::value {
+            if (values.size() != 2) { return host::err(ARG_COUNT_MISSMATCH(2)); }
+            std::filesystem::path fpath = values[0].as<std::string>();
+            if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
+            auto contents = values[1].as<std::string>();
+
+            std::ofstream file(fpath, std::ios::trunc | std::ios::out);
+
+            if (!file.good())
+            {
+                return host::err(FAILED_TO_OPEN_FILE_FOR_WRITE);
+            }
+
+            file << contents;
+            file.flush();
+            file.close();
+
+            return {};
+        } },
+        { "write_append", [](std::vector<sqf::value> values) -> sqf::value {
+            if (values.size() != 2) { return host::err(ARG_COUNT_MISSMATCH(2)); }
+            std::filesystem::path fpath = values[0].as<std::string>();
+            if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
+            auto contents = values[1].as<std::string>();
+
+            std::ofstream file(fpath, std::ios::app | std::ios::out);
+
+            if (!file.good())
+            {
+                return host::err(FAILED_TO_OPEN_FILE_FOR_WRITE);
+            }
+
+            file << contents;
+            file.flush();
+            file.close();
+
+            return {};
         } }
     });
     return h;
