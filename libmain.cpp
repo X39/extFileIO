@@ -116,7 +116,7 @@ public:
                 return exec_err;
             }
 
-            size_t key = (size_t)(values[0].as<float>());
+            size_t key = (size_t)(float(values[0]));
             auto lr = std::find_if(
                 m_long_results.begin(),
                 m_long_results.end(),
@@ -188,7 +188,7 @@ host& host::instance()
     static host h({
         { "read_file", [](std::vector<sqf::value> values) -> sqf::value {
             if (values.size() != 1) { return host::err(ARG_COUNT_MISSMATCH(1)); }
-            std::filesystem::path fpath = values[0].as<std::string>();
+            std::filesystem::path fpath = std::string(values[0]);
             if (!std::filesystem::exists(fpath)) { return host::err(FILE_NOT_FOUND); }
             if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
             std::ifstream file(fpath);
@@ -198,7 +198,7 @@ host& host::instance()
         } },
         { "list_dir", [](std::vector<sqf::value> values) -> sqf::value {
             if (values.size() != 1) { return host::err(ARG_COUNT_MISSMATCH(1)); }
-            std::filesystem::path fpath = values[0].as<std::string>();
+            std::filesystem::path fpath = std::string(values[0]);
             if (!std::filesystem::exists(fpath)) { return host::err(DIRECTORY_NOT_FOUND); }
             if (!std::filesystem::is_directory(fpath)) { return host::err(DIRECTORY_NOT_FOUND); }
             std::vector<sqf::value> paths;
@@ -216,9 +216,9 @@ host& host::instance()
         } },
         { "write_truncate", [](std::vector<sqf::value> values) -> sqf::value {
             if (values.size() != 2) { return host::err(ARG_COUNT_MISSMATCH(2)); }
-            std::filesystem::path fpath = values[0].as<std::string>();
+            std::filesystem::path fpath = std::string(values[0]);
             if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
-            auto contents = values[1].as<std::string>();
+            auto contents = std::string(values[1]);
 
             std::ofstream file(fpath, std::ios::trunc | std::ios::out);
 
@@ -235,9 +235,9 @@ host& host::instance()
         } },
         { "write_append", [](std::vector<sqf::value> values) -> sqf::value {
             if (values.size() != 2) { return host::err(ARG_COUNT_MISSMATCH(2)); }
-            std::filesystem::path fpath = values[0].as<std::string>();
+            std::filesystem::path fpath = std::string(values[0]);
             if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
-            auto contents = values[1].as<std::string>();
+            auto contents = std::string(values[1]);
 
             std::ofstream file(fpath, std::ios::app | std::ios::out);
 
