@@ -15,11 +15,11 @@
 
 
 #define STR(CONTENT) #CONTENT
-#define ARG_COUNT_MISSMATCH(EXPECTED) "Argument count missmatch! Expected " STR(EXPECTED) "."
+#define ARG_COUNT_MISSMATCH(EXPECTED) "Argument count mismatch! Expected " STR(EXPECTED) "."
 #define LONG_RESULT_KEY_NOT_FOUND "Long Result key unknown or expired."
-#define FILE_NOT_FOUND "File provided is not existing."
-#define DIRECTORY_NOT_FOUND "Directory provided is not existing or a file."
-#define FAILED_TO_OPEN_FILE_FOR_WRITE "Could not open file for write."
+#define FILE_NOT_FOUND "File not found."
+#define DIRECTORY_NOT_FOUND "Provided directory doesn't exist or is a file."
+#define FAILED_TO_OPEN_FILE_FOR_WRITE "Could not open file for write operation."
 
 
 using namespace std::string_literals;
@@ -71,7 +71,7 @@ private:
     std::vector<long_result> m_long_results;
     size_t m_long_result_keys;
 
-    host(std::unordered_map<std::string, func> map) : m_long_result_keys(0), m_map(map)
+    host(std::unordered_map<std::string, func> map) : m_long_result_keys(0), m_map(map), has_errord(false)
     {
     }
 
@@ -92,10 +92,11 @@ private:
         }
         return it->second(values);
     }
-
+    bool has_errord;
 public:
     static sqf::value err(std::string str)
     {
+        instance().has_errord = true;
         return str;
     }
     static host& instance();
@@ -131,7 +132,7 @@ public:
             if (lr->is_done())
             {
                 m_long_results.erase(lr);
-                return exec_ok;
+                return has_errord ? exec_err : exec_ok;
             }
             else
             {
@@ -140,6 +141,7 @@ public:
         }
         else
         {
+            has_errord = false;
             auto res = host::instance().execute(function, values);
             auto result = res.to_string();
 
@@ -156,7 +158,7 @@ public:
             {
                 strncpy(output, result.data(), result.length());
                 output[result.length()] = '\0';
-                return exec_ok;
+                return has_errord ? exec_err : exec_ok;
             }
         }
     }
