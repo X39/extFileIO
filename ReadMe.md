@@ -1,6 +1,7 @@
 # Return Codes
 
-| Value | Description
+| Value | Description |
+|-------|-------------|
 | -1    | An error occured. Check the actual result for more informations. |
 | 0     | Method was executed fine. |
 | 1     | The method could not fill the entire buffer to the end. Use the returned value with method `?` until a different return code got returned to get the full result. |
