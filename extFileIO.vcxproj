@@ -146,7 +146,6 @@
     <ClCompile Include="libmain.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="commandhost.h" />
     <ClInclude Include="libmain.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -12,6 +12,7 @@
 
 #include "libmain.hpp"
 #include "external/sqf-value/sqf-value/value.h"
+#include "external/sqf-value/sqf-value/methodhost.hpp"
 
 
 #define STR(CONTENT) #CONTENT
@@ -30,147 +31,6 @@
 
 using namespace std::string_literals;
 
-class host
-{
-public:
-    static constexpr int exec_ok = 0;
-    static constexpr int exec_err = -1;
-    static constexpr int exec_more = 1;
-    static constexpr const char* msg_unknown_method = "Method passed is not known to extension.";
-private:
-    class long_result
-    {
-        std::string value;
-        size_t index;
-
-    public:
-        size_t key;
-        long_result(size_t key, std::string str) : value(str), index(0), key(key)
-        {
-
-        }
-        void next(char* output, size_t size)
-        {
-            if (size == 0) { return; }
-
-            // move size one back for '\0'
-            size--;
-
-            // get start and end of writable value
-            auto len = value.length();
-            auto start = index;
-            auto end = start + size > len ? len : start + size;
-
-            // copy value to output
-            strncpy(output, value.data() + start, end - start);
-
-            // Set end to '\0'
-            output[end - start] = '\0';
-
-            // set index to end
-            index = end;
-        }
-        bool is_done() const { return value.length() <= index; }
-    };
-    using func = std::function<sqf::value(std::vector<sqf::value>)>;
-
-    std::unordered_map<std::string, func> m_map;
-    std::vector<long_result> m_long_results;
-    size_t m_long_result_keys;
-
-    host(std::unordered_map<std::string, func> map) : m_long_result_keys(0), m_map(map), has_errord(false)
-    {
-    }
-
-    static void err(std::string s, char* output, size_t output_size)
-    {
-        sqf::value val = s;
-        auto str = val.to_string();
-        strncpy(output, str.data(), str.length());
-        output[str.length()] = '\0';
-    }
-
-    sqf::value execute(std::string function, std::vector<sqf::value> values)
-    {
-        auto it = m_map.find(function);
-        if (it == m_map.end())
-        {
-            return err(msg_unknown_method);
-        }
-        return it->second(values);
-    }
-    bool has_errord;
-public:
-    static sqf::value err(std::string str)
-    {
-        instance().has_errord = true;
-        return str;
-    }
-    static host& instance();
-    
-    int execute(char* output, int outputSize, const char* in_function, const char** argv, int argc)
-    {
-        std::string function(in_function);
-        std::vector<sqf::value> values;
-        for (size_t i = 0; i < argc; i++)
-        {
-            values.push_back(sqf::value::parse(argv[i]));
-        }
-        if (function == "?")
-        {
-            if (values.size() != 1)
-            {
-                err(ARG_COUNT_MISSMATCH(1), output, outputSize);
-                return exec_err;
-            }
-
-            size_t key = (size_t)(float(values[0]));
-            auto lr = std::find_if(
-                m_long_results.begin(),
-                m_long_results.end(),
-                [key](long_result& res) -> bool { return res.key == key; });
-
-            if (lr == m_long_results.end())
-            {
-                err(LONG_RESULT_KEY_NOT_FOUND, output, outputSize);
-                return exec_err;
-            }
-            lr->next(output, outputSize);
-            if (lr->is_done())
-            {
-                m_long_results.erase(lr);
-                return has_errord ? exec_err : exec_ok;
-            }
-            else
-            {
-                return exec_more;
-            }
-        }
-        else
-        {
-            has_errord = false;
-            auto res = host::instance().execute(function, values);
-            auto result = res.to_string();
-
-            if (result.length() + 1 > outputSize)
-            {
-                auto key = ++m_long_result_keys;
-                m_long_results.emplace_back(key, result);
-                auto key_string = sqf::value((float)key).to_string();
-                strncpy(output, key_string.data(), key_string.length());
-                output[key_string.length()] = '\0';
-                return exec_more;
-            }
-            else
-            {
-                strncpy(output, result.data(), result.length());
-                output[result.length()] = '\0';
-                return has_errord ? exec_err : exec_ok;
-            }
-        }
-    }
-};
-
 
 DLLEXPORT void STDCALL RVExtensionVersion(char* output, int outputSize)
 {
@@ -187,32 +47,29 @@ DLLEXPORT void STDCALL RVExtension(char* output, int outputSize, const char* fun
 
 DLLEXPORT int STDCALL RVExtensionArgs(char* output, int outputSize, const char* function, const char** argv, int argc)
 {
-    auto res = host::instance().execute(output, outputSize, function, argv, argc);
+    auto res = sqf::methodhost::instance().execute(output, outputSize, function, argv, argc);
     return res;
 }
 
-host& host::instance()
+sqf::methodhost& sqf::methodhost::instance()
 {
-    static host h({
-        { "read", [](std::vector<sqf::value> values) -> sqf::value {
-            // Check arg count
-            if (values.size() < 1 || values.size() > 2) { return host::err(ARG_COUNT_MISSMATCH(1, 2)); }
-
+    using namespace std::string_literals;
+    static sqf::methodhost h({
+        { "read", {
+            sqf::method::create([](std::string filepath, std::optional<std::string> modifiers) -> sqf::method::ret<sqf::value, std::string> {
             // Get file path (arg0)
-            if (std::string(values[0]).empty()) { return host::err(PATH_EMPTY_FILE); }
-            std::filesystem::path fpath = std::string(values[0]);
-            fpath = std::filesystem::absolute(fpath);
+            if (filepath.empty()) { return { {}, PATH_EMPTY_FILE }; }
+            std::filesystem::path fpath = std::filesystem::absolute(filepath);
 
             // ensure file is not directory and exists
-            if (!std::filesystem::exists(fpath)) { return host::err(FILE_NOT_FOUND); }
-            if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
+            if (!std::filesystem::exists(fpath)) { return { {}, FILE_NOT_FOUND }; }
+            if (std::filesystem::is_directory(fpath)) { return { {}, FILE_NOT_FOUND }; }
 
             // Get mode (arg1) ("i", "b")
             std::ios::openmode mode = std::ios::in;
-            if (values.size() >= 1)
+            if (modifiers.has_value())
             {
-                auto modes = std::string(values[1]);
-                for (auto c : modes)
+                for (auto c : *modifiers)
                 {
                     switch (c)
                     {
@@ -225,7 +82,7 @@ host& host::instance()
                         mode = mode | std::ios::binary;
                         break;
                     default:
-                        return host::err(UNKNOWN_READ_MODE);
+                        return { {}, UNKNOWN_READ_MODE };
                         break;
                     }
                 }
@@ -233,7 +90,7 @@ host& host::instance()
 
             // read in file
             std::ifstream file(fpath, mode);
-            if (!file.is_open() || !file.good()) { return host::err(FILE_NOT_FOUND); }
+            if (!file.is_open() || !file.good()) { return { {}, FILE_NOT_FOUND }; }
             std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 
             // return array if binary mode was supplied
@@ -245,31 +102,25 @@ host& host::instance()
                 {
                     out.push_back(sqf::value((float)c));
                 }
-                return out;
+                return { out, {} };
             }
             else
             {
-                return contents;
+                return { contents, {} };
             }
+        })
         } },
-        { "list", [](std::vector<sqf::value> values) -> sqf::value {
-            if (values.size() < 1 || values.size() > 2) { return host::err(ARG_COUNT_MISSMATCH(1, 2)); }
+        { "list", {
+            sqf::method::create([](std::string filepath, std::optional<std::string> filter) -> sqf::value {
+            if (filepath.empty()) { return { {}, PATH_EMPTY_DIR }; }
+            std::filesystem::path fpath = std::filesystem::absolute(filepath);
 
-            if (std::string(values[0]).empty()) { return host::err(PATH_EMPTY_DIR); }
-            std::filesystem::path fpath = std::string(values[0]);
-            fpath = fpath.lexically_normal();
+            std::string ends_with_filter = filter.has_value() ? filter.value() : ""s;
+            std::transform(ends_with_filter.begin(), ends_with_filter.end(), ends_with_filter.begin(),
+                [](char c) -> char { return (char)std::tolower(c); });
 
-
-            std::string ends_with_filter = "";
-            if (values.size() >= 2)
-            {
-                ends_with_filter = std::string(values[1]);
-                std::transform(ends_with_filter.begin(), ends_with_filter.end(), ends_with_filter.begin(),
-                    [](char c) -> char { return (char)std::tolower(c); });
-            }
-
-            if (!std::filesystem::exists(fpath)) { return host::err(DIRECTORY_NOT_FOUND); }
-            if (!std::filesystem::is_directory(fpath)) { return host::err(DIRECTORY_NOT_FOUND); }
+            if (!std::filesystem::exists(fpath)) { return  { {}, DIRECTORY_NOT_FOUND }; }
+            if (!std::filesystem::is_directory(fpath)) { return  { {}, DIRECTORY_NOT_FOUND }; }
 
             std::vector<sqf::value> paths;
 
@@ -295,83 +146,60 @@ host& host::instance()
                     });
             }
             return paths;
+        })
         } },
-        { "write", [](std::vector<sqf::value> values) -> sqf::value {
-            // Check arg count
-            if (values.size() != 3) { return host::err(ARG_COUNT_MISSMATCH(3)); }
+        { "write", {
+            sqf::method::create([](std::string filepath, bool append, std::string contents) -> sqf::value {
+                // Get file path (arg0)
+                if (filepath.empty()) { return { {}, PATH_EMPTY_FILE }; }
+                std::filesystem::path fpath = std::filesystem::absolute(filepath);
 
-            // Get file path (arg0)
-            if (std::string(values[0]).empty()) { return host::err(PATH_EMPTY_FILE); }
-            std::filesystem::path fpath = std::string(values[0]);
-            fpath = std::filesystem::absolute(fpath);
+                // ensure file is not directory
+                if (std::filesystem::is_directory(fpath)) { return { {}, FILE_NOT_FOUND }; }
 
-            // ensure file is not directory
-            if (std::filesystem::is_directory(fpath)) { return host::err(FILE_NOT_FOUND); }
+                std::ios::openmode mode = append ? (std::ios::out | std::ios::app) : (std::ios::out | std::ios::trunc);
 
-            // Get mode (arg1) ("t", "a", "b", "o")
-            auto modes = std::string(values[1]);
-            std::ios::openmode mode = std::ios::out;
-            for (auto c : modes)
-            {
-                switch (c)
-                {
-                case 'o':
-                case 'O':
-                    mode = mode | std::ios::out;
-                    break;
-                case 't':
-                case 'T':
-                    mode = (mode | std::ios::trunc) & ~std::ios::app;
-                    break;
-                case 'a':
-                case 'A':
-                    mode = (mode | std::ios::app) & ~std::ios::trunc;
-                    break;
-                case 'b':
-                case 'B':
-                    mode = mode | std::ios::binary;
-                    break;
-                default:
-                    return host::err(UNKNOWN_WRITE_MODE);
-                    break;
-                }
-            }
+                // open fstream
+                std::ofstream file(fpath, mode);
+                if (!file.good()) { return { {}, FAILED_TO_OPEN_FILE_FOR_WRITE }; }
 
-            // open fstream
-            std::ofstream file(fpath, mode);
-            if (!file.good())
-            {
-                return host::err(FAILED_TO_OPEN_FILE_FOR_WRITE);
-            }
+                // Get contents to write (arg2)
+                file << contents;
 
-            // Get contents to write (arg2)
-            std::string contents;
-            if (values[2].is_array())
-            {
-                auto arr = std::vector<sqf::value>(values[2]);
+                file.flush();
+                file.close();
+
+                return {};
+            }),
+            sqf::method::create([](std::string filepath, bool append, std::vector<sqf::value> contents) -> sqf::value {
+                // Get file path (arg0)
+                if (filepath.empty()) { return { {}, PATH_EMPTY_FILE }; }
+                std::filesystem::path fpath = std::filesystem::absolute(filepath);
+
+                // ensure file is not directory
+                if (std::filesystem::is_directory(fpath)) { return { {}, FILE_NOT_FOUND }; }
+
+                std::ios::openmode mode = append ? (std::ios::out | std::ios::app) : (std::ios::out | std::ios::trunc);
+
+                // open fstream
+                std::ofstream file(fpath, mode);
+                if (!file.good()) { return { {}, FAILED_TO_OPEN_FILE_FOR_WRITE }; }
+
+                // Get contents to write (arg2)
                 auto out = std::vector<char>();
-                out.reserve(arr.size());
-                for (auto val : arr)
+                out.reserve(contents.size());
+                for (auto val : contents)
                 {
-                    if (!val.is_scalar())
-                    {
-                        return host::err(FILE_ARRAY_DATA_PASSED_NOT_ALL_SCALAR);
-                    }
+                    if (!val.is_scalar()) { return { {},FILE_ARRAY_DATA_PASSED_NOT_ALL_SCALAR }; }
                     out.push_back((char)(int)float(val));
                 }
                 file.write(out.data(), out.size());
-            }
-            else
-            {
-                auto contents = std::string(values[2]);
 
-                file << contents;
-            }
+                file.flush();
+                file.close();
 
-            file.flush();
-            file.close();
-
-            return {};
+                return {};
+            })
         } }
     });
     return h;
@@ -418,12 +246,12 @@ void execute(std::string function, std::array<sqf::value, data_size> data)
     auto res = RVExtensionArgs(buff, buff_size, in_function, in_data, data_size);
     std::cout << "Result: " << res << "\n" <<
         "Length: " << strlen(buff, buff_size) << "\n";
-    if (res == host::exec_more) { std::cout << buff << std::endl; }
+    if (res == sqf::methodhost::exec_more) { std::cout << buff << std::endl; }
     else { std::cout << sqf::value::parse(buff).to_string(false) << std::endl; }
 
     auto orig_res = std::string(buff, strlen(buff, buff_size));
     const char* in_orig_res[1] = { orig_res.c_str() };
-    while (res == host::exec_more)
+    while (res == sqf::methodhost::exec_more)
     {
         res = RVExtensionArgs(buff, buff_size, "?", in_orig_res, 1);
         std::cout << "Result: " << res << "\n" <<
@@ -432,25 +260,64 @@ void execute(std::string function, std::array<sqf::value, data_size> data)
     }
     std::cout << std::endl;
 }
+
 int main()
 {
     using namespace std::string_literals;
     using namespace sqf;
+
+    auto m1 = sqf::method::create(
+        [](std::string path, std::optional<std::string> mode) -> method::ret<bool, std::string> {
+            return method::ret<bool, std::string>::err("abc");
+        });
+    auto m2 = sqf::method::create(
+        [](std::string path, std::optional<std::string> mode) -> method::ret<bool, std::string> {
+            return method::ret<bool, std::string>::ok(mode.has_value());
+        });
+    auto m3 = sqf::method::create(
+        [](std::string path, std::optional<std::string> mode) -> bool {
+            return mode.has_value();
+        });
+    std::cout << "can_call 1: " << m1.can_call({ "'test'"_sqf }) << "\n" <<
+        "can_call 2: " << m1.can_call({ "'test'"_sqf, "'test'"_sqf }) << "\n" <<
+        "can_call 3: " << m1.can_call({ "'test'"_sqf, "'test'"_sqf, "'test'"_sqf }) << "\n" <<
+        "can_call 4: " << m1.can_call({ "'test'"_sqf, "2"_sqf }) << "\n" <<
+        "can_call 5: " << m1.can_call({ "2"_sqf, "2"_sqf }) << "\n" <<
+        "can_call 6: " << m1.can_call({ "2"_sqf }) << "\n";
+
+    auto call1_res = m1.call_generic({ "'test'"_sqf });
+    std::cout << "call 1: " << (call1_res.is_ok() ? "ok" : "err") << " - " <<
+        (call1_res.is_ok() ? call1_res.get_ok().to_string() : call1_res.get_err().to_string()) << "\n";
+
+    auto call2_res = m2.call_generic({ "'test'"_sqf });
+    std::cout << "call 2: " << (call2_res.is_ok() ? "ok" : "err") << " - " <<
+        (call2_res.is_ok() ? call2_res.get_ok().to_string() : call2_res.get_err().to_string()) << "\n";
+
+    auto call3_res = m2.call_generic({ "'test'"_sqf, "'test'"_sqf });
+    std::cout << "call 3: " << (call3_res.is_ok() ? "ok" : "err") << " - " <<
+        (call3_res.is_ok() ? call3_res.get_ok().to_string() : call3_res.get_err().to_string()) << std::endl;
+
+    auto call4_res = m3.call_generic({ "'test'"_sqf, "'test'"_sqf });
+    std::cout << "call 3: " << (call4_res.is_ok() ? "ok" : "err") << " - " <<
+        (call4_res.is_ok() ? call4_res.get_ok().to_string() : call4_res.get_err().to_string()) << std::endl;
+
+
+
     // Will error and return "more"
-    execute<50>("list_dir"s, std::array{ "\"\""sqf });
+    execute<50>("list"s, std::array{ "\"\""_sqf });
     // Will return array of current working dir
-    execute<1000>("list_dir"s, std::array{ "'.'"sqf, "'.cpp'"sqf });
-    execute<1000>("write"s, std::array{ "'truncate.bin'"sqf, "'tb'"sqf, "[65]"sqf });
-    execute<1000>("write"s, std::array{ "'truncate.bin'"sqf, "'tb'"sqf, "[66]"sqf });
-    execute<1000>("write"s, std::array{ "'truncate.bin'"sqf, "'tb'"sqf, "[67]"sqf });
-    execute<1000>("write"s, std::array{ "'append.bin'"sqf, "'ab'"sqf, "[65]"sqf });
-    execute<1000>("write"s, std::array{ "'append.bin'"sqf, "'ab'"sqf, "[66]"sqf });
-    execute<1000>("write"s, std::array{ "'append.bin'"sqf, "'ab'"sqf, "[67]"sqf });
-    execute<1000>("write"s, std::array{ "'truncate.txt'"sqf, "'t'"sqf, "'A'"sqf });
-    execute<1000>("write"s, std::array{ "'truncate.txt'"sqf, "'t'"sqf, "'B'"sqf });
-    execute<1000>("write"s, std::array{ "'truncate.txt'"sqf, "'t'"sqf, "'C'"sqf });
-    execute<1000>("write"s, std::array{ "'append.txt'"sqf, "'a'"sqf, "'A'"sqf });
-    execute<1000>("write"s, std::array{ "'append.txt'"sqf, "'a'"sqf, "'B'"sqf });
-    execute<1000>("write"s, std::array{ "'append.txt'"sqf, "'a'"sqf, "'C'"sqf });
+    execute<1000>("list"s, std::array{ "'.'"_sqf, "'.cpp'"_sqf });
+    execute<1000>("write"s, std::array{ "'truncate.bin'"_sqf, "false"_sqf, "[65]"_sqf });
+    execute<1000>("write"s, std::array{ "'truncate.bin'"_sqf, "false"_sqf, "[66]"_sqf });
+    execute<1000>("write"s, std::array{ "'truncate.bin'"_sqf, "false"_sqf, "[67]"_sqf });
+    execute<1000>("write"s, std::array{ "'append.bin'"_sqf, "true"_sqf, "[65]"_sqf });
+    execute<1000>("write"s, std::array{ "'append.bin'"_sqf, "true"_sqf, "[66]"_sqf });
+    execute<1000>("write"s, std::array{ "'append.bin'"_sqf, "true"_sqf, "[67]"_sqf });
+    execute<1000>("write"s, std::array{ "'truncate.txt'"_sqf, "false"_sqf, "'A'"_sqf });
+    execute<1000>("write"s, std::array{ "'truncate.txt'"_sqf, "false"_sqf, "'B'"_sqf });
+    execute<1000>("write"s, std::array{ "'truncate.txt'"_sqf, "false"_sqf, "'C'"_sqf });
+    execute<1000>("write"s, std::array{ "'append.txt'"_sqf, "true"_sqf, "'A'"_sqf });
+    execute<1000>("write"s, std::array{ "'append.txt'"_sqf, "true"_sqf, "'B'"_sqf });
+    execute<1000>("write"s, std::array{ "'append.txt'"_sqf, "true"_sqf, "'C'"_sqf });
 }
 #endif

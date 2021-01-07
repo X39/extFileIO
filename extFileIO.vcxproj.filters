@@ -23,8 +23,5 @@
     <ClInclude Include="libmain.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="commandhost.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>
