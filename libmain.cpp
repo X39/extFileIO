@@ -20,9 +20,11 @@
 #define ARG_COUNT_MISSMATCH(MIN, MAX) "Argument count mismatch! Expected at least " STR(MIN) " up to " STR(MAX) "."
 #define LONG_RESULT_KEY_NOT_FOUND "Long Result key unknown or expired."
 #define FILE_NOT_FOUND "File not found."
+#define FILE_WITH_NAME_ALREADY_EXISTS_FOUND "File already exists."
 #define DIRECTORY_NOT_FOUND "Provided directory doesn't exist or is a file."
 #define FAILED_TO_OPEN_FILE_FOR_WRITE "Could not open file for write operation."
-#define PATH_EMPTY_FILE "Path provided is empty."
+#define SAME_PATH_PROVIDED "Paths provided is the same."
+#define PATH_EMPTY "Path provided is empty."
 #define PATH_EMPTY_DIR "Path provided is empty. Pass in \".\" to make it list the current direcotry."
 #define UNKNOWN_WRITE_MODE "Unknown write mode."
 #define UNKNOWN_READ_MODE "Unknown read mode."
@@ -51,157 +53,229 @@ DLLEXPORT int STDCALL RVExtensionArgs(char* output, int outputSize, const char* 
     return res;
 }
 
+using ret_d = sqf::method::ret<sqf::value, std::string>;
+ret_d fnc_impl_read(std::string filepath, std::optional<std::string> modifiers)
+{
+    // Get file path (arg0)
+    if (filepath.empty()) { return ret_d::err(PATH_EMPTY); }
+    std::filesystem::path fpath = std::filesystem::absolute(filepath);
+
+    // ensure file is not directory and exists
+    if (!std::filesystem::exists(fpath)) { return ret_d::err(FILE_NOT_FOUND);; }
+    if (std::filesystem::is_directory(fpath)) { return ret_d::err(FILE_NOT_FOUND);; }
+
+    // Get mode (arg1) ("i", "b")
+    std::ios::openmode mode = std::ios::in;
+    if (modifiers.has_value())
+    {
+        for (auto c : *modifiers)
+        {
+            switch (c)
+            {
+                case 'i':
+                case 'I':
+                mode = mode | std::ios::in;
+                break;
+                case 'b':
+                case 'B':
+                mode = mode | std::ios::binary;
+                break;
+                default:
+                return ret_d::err(UNKNOWN_READ_MODE);
+                break;
+            }
+        }
+    }
+
+    // read in file
+    std::ifstream file(fpath, mode);
+    if (!file.is_open() || !file.good()) { return ret_d::err(FILE_NOT_FOUND);; }
+    std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // return array if binary mode was supplied
+    if ((mode & std::ios::binary) == std::ios::binary)
+    {
+        std::vector<sqf::value> out;
+        out.reserve(contents.length());
+        for (auto c : contents)
+        {
+            out.push_back(sqf::value((float)c));
+        }
+        return ret_d::ok(out);
+    }
+    else
+    {
+        return ret_d::ok(contents);
+    }
+}
+ret_d fnc_impl_write_str(std::string filepath, bool append, std::string contents)
+{
+    // Get file path (arg0)
+    if (filepath.empty()) { return ret_d::err(PATH_EMPTY); }
+    std::filesystem::path fpath = std::filesystem::absolute(filepath);
+
+    // ensure file is not directory
+    if (std::filesystem::is_directory(fpath)) { return ret_d::err(FILE_NOT_FOUND);; }
+
+    std::ios::openmode mode = append ? (std::ios::out | std::ios::app) : (std::ios::out | std::ios::trunc);
+
+    // open fstream
+    std::ofstream file(fpath, mode);
+    if (!file.good()) { return { {}, FAILED_TO_OPEN_FILE_FOR_WRITE }; }
+
+    // Get contents to write (arg2)
+    file << contents;
+
+    file.flush();
+    file.close();
+
+    return ret_d::ok({});
+}
+ret_d fnc_impl_write_vec(std::string filepath, bool append, std::vector<sqf::value> contents)
+{
+    // Get file path (arg0)
+    if (filepath.empty()) { return ret_d::err(PATH_EMPTY); }
+    std::filesystem::path fpath = std::filesystem::absolute(filepath);
+
+    // ensure file is not directory
+    if (std::filesystem::is_directory(fpath)) { return ret_d::err(FILE_NOT_FOUND);; }
+
+    std::ios::openmode mode = append ? (std::ios::out | std::ios::app) : (std::ios::out | std::ios::trunc);
+
+    // open fstream
+    std::ofstream file(fpath, mode);
+    if (!file.good()) { return { {}, FAILED_TO_OPEN_FILE_FOR_WRITE }; }
+
+    // Get contents to write (arg2)
+    auto out = std::vector<char>();
+    out.reserve(contents.size());
+    for (auto val : contents)
+    {
+        if (!val.is_scalar()) { return { {},FILE_ARRAY_DATA_PASSED_NOT_ALL_SCALAR }; }
+        out.push_back((char)(int)float(val));
+    }
+    file.write(out.data(), out.size());
+
+    file.flush();
+    file.close();
+
+    return ret_d::ok({});
+}
+ret_d fnc_impl_list(std::string filepath, std::optional<std::string> filter)
+{
+    if (filepath.empty()) { return { {}, PATH_EMPTY_DIR }; }
+    std::filesystem::path fpath = std::filesystem::absolute(filepath);
+
+    std::string ends_with_filter = filter.has_value() ? filter.value() : ""s;
+    std::transform(ends_with_filter.begin(), ends_with_filter.end(), ends_with_filter.begin(),
+        [](char c) -> char { return (char)std::tolower(c); });
+
+    if (!std::filesystem::exists(fpath)) { return  { {}, DIRECTORY_NOT_FOUND }; }
+    if (!std::filesystem::is_directory(fpath)) { return  { {}, DIRECTORY_NOT_FOUND }; }
+
+    std::vector<sqf::value> paths;
+
+    for (auto it = std::filesystem::recursive_directory_iterator(fpath, std::filesystem::directory_options::skip_permission_denied);
+        it != std::filesystem::recursive_directory_iterator();
+        ++it)
+    {
+        auto str = std::filesystem::absolute(it->path()).string();
+        auto str_low = str;
+        std::transform(str_low.begin(), str_low.end(), str_low.begin(),
+            [](char c) -> char { return (char)std::tolower(c); });
+
+        if (str.length() < ends_with_filter.length()) { continue; }
+        if (!ends_with_filter.empty() &&
+            0 != str_low.compare(
+                str_low.length() - ends_with_filter.length(),
+                ends_with_filter.length(),
+                ends_with_filter))
+        {
+            continue;
+        }
+
+        paths.push_back({
+            std::filesystem::is_directory(it->path()) ? "d"s : "f"s,
+            str
+            });
+    }
+    return ret_d::ok(paths);
+}
+ret_d fnc_impl_copy(std::string current_name, std::string new_name)
+{
+    // Get file path
+    if (current_name.empty()) { return ret_d::err(PATH_EMPTY); }
+    if (new_name.empty()) { return ret_d::err(PATH_EMPTY); }
+    std::filesystem::path path_current = std::filesystem::absolute(current_name);
+    std::filesystem::path path_new = std::filesystem::absolute(new_name);
+
+    if (path_current == path_new) { return ret_d::err(SAME_PATH_PROVIDED); }
+
+    // ensure current exists
+    if (!std::filesystem::exists(path_current)) { return ret_d::err(FILE_NOT_FOUND);; }
+
+    // ensure new does not exists
+    if (std::filesystem::exists(path_current)) { return ret_d::err(FILE_WITH_NAME_ALREADY_EXISTS_FOUND); }
+
+    std::filesystem::copy(path_current, path_new);
+
+    return ret_d::ok({});
+}
+ret_d fnc_impl_rename(std::string current_name, std::string new_name)
+{
+    // Get file path
+    if (current_name.empty()) { return ret_d::err(PATH_EMPTY); }
+    if (new_name.empty()) { return ret_d::err(PATH_EMPTY); }
+    std::filesystem::path path_current = std::filesystem::absolute(current_name);
+    std::filesystem::path path_new = std::filesystem::absolute(new_name);
+
+    if (path_current == path_new) { return ret_d::err(SAME_PATH_PROVIDED); }
+
+    // ensure current exists
+    if (!std::filesystem::exists(path_current)) { return ret_d::err(FILE_NOT_FOUND); }
+
+    // ensure new does not exists
+    if (std::filesystem::exists(path_current)) { return ret_d::err(FILE_WITH_NAME_ALREADY_EXISTS_FOUND); }
+
+    std::filesystem::rename(path_current, path_new);
+
+    return ret_d::ok({});
+}
+ret_d fnc_impl_delete(std::string filename)
+{
+    // Get file path
+    if (filename.empty()) { return ret_d::err(PATH_EMPTY); }
+    std::filesystem::path fpath = std::filesystem::absolute(filename);
+
+    // ensure current exists
+    if (std::filesystem::exists(filename)) { return ret_d::err(FILE_NOT_FOUND); }
+
+    if (std::filesystem::is_directory(filename))
+    {
+        std::filesystem::remove_all(fpath);
+    }
+    else
+    {
+        std::filesystem::remove(fpath);
+    }
+
+    return ret_d::ok({});
+}
+
 sqf::methodhost& sqf::methodhost::instance()
 {
     using namespace std::string_literals;
+    // We could use lambdas for this ...
+    // but auto-formatters for some reason just refuse
+    // to work nice with the whole initializer list stuff
     static sqf::methodhost h({
-        { "read", {
-            sqf::method::create([](std::string filepath, std::optional<std::string> modifiers) -> sqf::method::ret<sqf::value, std::string> {
-            // Get file path (arg0)
-            if (filepath.empty()) { return { {}, PATH_EMPTY_FILE }; }
-            std::filesystem::path fpath = std::filesystem::absolute(filepath);
-
-            // ensure file is not directory and exists
-            if (!std::filesystem::exists(fpath)) { return { {}, FILE_NOT_FOUND }; }
-            if (std::filesystem::is_directory(fpath)) { return { {}, FILE_NOT_FOUND }; }
-
-            // Get mode (arg1) ("i", "b")
-            std::ios::openmode mode = std::ios::in;
-            if (modifiers.has_value())
-            {
-                for (auto c : *modifiers)
-                {
-                    switch (c)
-                    {
-                    case 'i':
-                    case 'I':
-                        mode = mode | std::ios::in;
-                        break;
-                    case 'b':
-                    case 'B':
-                        mode = mode | std::ios::binary;
-                        break;
-                    default:
-                        return { {}, UNKNOWN_READ_MODE };
-                        break;
-                    }
-                }
-            }
-
-            // read in file
-            std::ifstream file(fpath, mode);
-            if (!file.is_open() || !file.good()) { return { {}, FILE_NOT_FOUND }; }
-            std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-
-            // return array if binary mode was supplied
-            if ((mode & std::ios::binary) == std::ios::binary)
-            {
-                std::vector<sqf::value> out;
-                out.reserve(contents.length());
-                for (auto c : contents)
-                {
-                    out.push_back(sqf::value((float)c));
-                }
-                return { out, {} };
-            }
-            else
-            {
-                return { contents, {} };
-            }
-        })
-        } },
-        { "list", {
-            sqf::method::create([](std::string filepath, std::optional<std::string> filter) -> sqf::value {
-            if (filepath.empty()) { return { {}, PATH_EMPTY_DIR }; }
-            std::filesystem::path fpath = std::filesystem::absolute(filepath);
-
-            std::string ends_with_filter = filter.has_value() ? filter.value() : ""s;
-            std::transform(ends_with_filter.begin(), ends_with_filter.end(), ends_with_filter.begin(),
-                [](char c) -> char { return (char)std::tolower(c); });
-
-            if (!std::filesystem::exists(fpath)) { return  { {}, DIRECTORY_NOT_FOUND }; }
-            if (!std::filesystem::is_directory(fpath)) { return  { {}, DIRECTORY_NOT_FOUND }; }
-
-            std::vector<sqf::value> paths;
-
-            for (auto it = std::filesystem::recursive_directory_iterator(fpath, std::filesystem::directory_options::skip_permission_denied);
-                it != std::filesystem::recursive_directory_iterator();
-                ++it)
-            {
-                auto str = std::filesystem::absolute(it->path()).string();
-                auto str_low = str;
-                std::transform(str_low.begin(), str_low.end(), str_low.begin(),
-                    [](char c) -> char { return (char)std::tolower(c); });
-
-                if (str.length() < ends_with_filter.length()) { continue; }
-                if (!ends_with_filter.empty() &&
-                    0 != str_low.compare(
-                    str_low.length() - ends_with_filter.length(),
-                    ends_with_filter.length(),
-                    ends_with_filter)) { continue; }
-
-                paths.push_back({
-                    std::filesystem::is_directory(it->path()) ? "d"s : "f"s,
-                    str
-                    });
-            }
-            return paths;
-        })
-        } },
-        { "write", {
-            sqf::method::create([](std::string filepath, bool append, std::string contents) -> sqf::value {
-                // Get file path (arg0)
-                if (filepath.empty()) { return { {}, PATH_EMPTY_FILE }; }
-                std::filesystem::path fpath = std::filesystem::absolute(filepath);
-
-                // ensure file is not directory
-                if (std::filesystem::is_directory(fpath)) { return { {}, FILE_NOT_FOUND }; }
-
-                std::ios::openmode mode = append ? (std::ios::out | std::ios::app) : (std::ios::out | std::ios::trunc);
-
-                // open fstream
-                std::ofstream file(fpath, mode);
-                if (!file.good()) { return { {}, FAILED_TO_OPEN_FILE_FOR_WRITE }; }
-
-                // Get contents to write (arg2)
-                file << contents;
-
-                file.flush();
-                file.close();
-
-                return {};
-            }),
-            sqf::method::create([](std::string filepath, bool append, std::vector<sqf::value> contents) -> sqf::value {
-                // Get file path (arg0)
-                if (filepath.empty()) { return { {}, PATH_EMPTY_FILE }; }
-                std::filesystem::path fpath = std::filesystem::absolute(filepath);
-
-                // ensure file is not directory
-                if (std::filesystem::is_directory(fpath)) { return { {}, FILE_NOT_FOUND }; }
-
-                std::ios::openmode mode = append ? (std::ios::out | std::ios::app) : (std::ios::out | std::ios::trunc);
-
-                // open fstream
-                std::ofstream file(fpath, mode);
-                if (!file.good()) { return { {}, FAILED_TO_OPEN_FILE_FOR_WRITE }; }
-
-                // Get contents to write (arg2)
-                auto out = std::vector<char>();
-                out.reserve(contents.size());
-                for (auto val : contents)
-                {
-                    if (!val.is_scalar()) { return { {},FILE_ARRAY_DATA_PASSED_NOT_ALL_SCALAR }; }
-                    out.push_back((char)(int)float(val));
-                }
-                file.write(out.data(), out.size());
-
-                file.flush();
-                file.close();
-
-                return {};
-            })
-        } }
-    });
+        { "read", { sqf::method::create(fnc_impl_read) } },
+        { "write", { sqf::method::create(fnc_impl_write_str), sqf::method::create(fnc_impl_write_vec) } },
+        { "list", { sqf::method::create(fnc_impl_list) } },
+        { "copy", { sqf::method::create(fnc_impl_copy) } },
+        { "rename", { sqf::method::create(fnc_impl_rename) } },
+        { "delete", { sqf::method::create(fnc_impl_delete) } }
+        });
     return h;
 }
 
@@ -214,7 +288,7 @@ sqf::methodhost& sqf::methodhost::instance()
 size_t strlen(const char* str, size_t max)
 {
     size_t i;
-    for (i = 0; i < max && str[i] != '\0'; i++) { }
+    for (i = 0; i < max && str[i] != '\0'; i++) {}
 
     if (i == max)
     {
@@ -255,8 +329,8 @@ void execute(std::string function, std::array<sqf::value, data_size> data)
     {
         res = RVExtensionArgs(buff, buff_size, "?", in_orig_res, 1);
         std::cout << "Result: " << res << "\n" <<
-                     "Length: " << strlen(buff, buff_size) << "\n" <<
-                     buff << std::endl;
+            "Length: " << strlen(buff, buff_size) << "\n" <<
+            buff << std::endl;
     }
     std::cout << std::endl;
 }
