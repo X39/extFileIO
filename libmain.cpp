@@ -11,7 +11,7 @@
 #include <functional>
 
 #include "libmain.hpp"
-#include "external/sqf-value/sqf-value/value.h"
+#include "external/sqf-value/sqf-value/value.hpp"
 #include "external/sqf-value/sqf-value/methodhost.hpp"
 
 
